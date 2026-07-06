@@ -46,6 +46,12 @@ bin/magento phoenix:createmassorders:generate \
 - Si un SKU est introuvable, aucune commande n'est créée. Les autres erreurs
   (adresse manquante, échec de validation de commande, etc.) sont journalisées
   par commande sans interrompre la génération des suivantes.
+- Les champs custom Wesco `wesco_first_estimated_delivre_date_from` et
+  `wesco_first_estimated_delivre_date_to` sont renseignés avec la date du jour
+  + 2 jours. Les autres champs custom (`wesco_customer_profile`,
+  `wesco_partial`, `wesco_confirme`, `wesco_multiple_shipment`,
+  `wesco_is_erp_order`, `wesco_send_to_erp`, `person_in_charge`, etc.) sont
+  laissés à leur valeur par défaut de la table.
 
 ## Exemple
 

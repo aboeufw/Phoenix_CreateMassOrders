@@ -31,6 +31,11 @@ class OrderGenerator
      */
     private const SHIPPING_METHOD = 'transporter_transporter';
 
+    /**
+     * Decalage (en jours) applique a la date du jour pour estimer la date de livraison.
+     */
+    private const ESTIMATED_DELIVERY_OFFSET_DAYS = 2;
+
     public function __construct(
         private readonly CustomerRepositoryInterface $customerRepository,
         private readonly AddressRepositoryInterface $addressRepository,
@@ -141,7 +146,20 @@ class OrderGenerator
             throw new LocalizedException(__('Echec lors de la validation de la commande : %1', $e->getMessage()), $e);
         }
 
-        return $this->orderRepository->get($orderId);
+        $order = $this->orderRepository->get($orderId);
+
+        $estimatedDeliveryDate = $this->estimatedDeliveryDate();
+        $order->setData('wesco_first_estimated_delivre_date_from', $estimatedDeliveryDate);
+        $order->setData('wesco_first_estimated_delivre_date_to', $estimatedDeliveryDate);
+
+        return $this->orderRepository->save($order);
+    }
+
+    private function estimatedDeliveryDate(): string
+    {
+        return (new \DateTime('today'))
+            ->modify(sprintf('+%d days', self::ESTIMATED_DELIVERY_OFFSET_DAYS))
+            ->format('Y-m-d 00:00:00');
     }
 
     private function resolveStore(CustomerInterface $customer): \Magento\Store\Api\Data\StoreInterface
