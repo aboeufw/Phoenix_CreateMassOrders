@@ -1,0 +1,57 @@
+# Phoenix_CreateMassOrders
+
+Module Magento Commerce 2.4.7-P5 pour générer en masse des commandes de test sur un
+environnement de **recette**, afin d'alimenter l'ERP avec des données de test.
+
+## Installation
+
+```bash
+# Depuis la racine du projet Magento
+cp -r app/code/Phoenix vendor-app/code/  # ou copier directement le dossier app/code/Phoenix
+
+bin/magento module:enable Phoenix_CreateMassOrders
+bin/magento setup:upgrade
+bin/magento cache:flush
+```
+
+## Commande
+
+```
+bin/magento phoenix:createmassorders:generate \
+    --count=10 \
+    --customer-email=client@exemple.com \
+    --sku=SKU-001 --sku=SKU-002 \
+    --payment-method=checkmo
+```
+
+### Options
+
+| Option              | Raccourci | Obligatoire | Description                                                                 |
+|---------------------|-----------|-------------|-------------------------------------------------------------------------------|
+| `--count`           | `-c`      | Oui         | Nombre de commandes à générer.                                               |
+| `--customer-email`  | `-e`      | Oui         | Email du client Magento (facturation **et** livraison, adresses par défaut). |
+| `--sku`             | `-s`      | Oui         | SKU à inclure dans chaque commande (répéter l'option pour plusieurs SKU, quantité 1 par SKU). |
+| `--payment-method`  | `-p`      | Non         | Code du mode de paiement (défaut : `checkmo`).                              |
+
+### Comportement
+
+- Le client est recherché par **email**. Il doit avoir une adresse de facturation
+  et une adresse de livraison par défaut définies dans son carnet d'adresses.
+- Chaque commande générée contient un exemplaire de chaque SKU passé en paramètre.
+- Le transporteur utilisé est fixé sur **"Standard"** (`transporter_transporter`).
+- Le mode de paiement par défaut est **Paiement par chèque** (`checkmo`), mais un
+  autre code de mode de paiement actif peut être fourni via `--payment-method`.
+- Les commandes sont créées à l'état **new / pending**, sans facturation ni
+  expédition automatique.
+- Si un SKU est introuvable, aucune commande n'est créée. Les autres erreurs
+  (adresse manquante, échec de validation de commande, etc.) sont journalisées
+  par commande sans interrompre la génération des suivantes.
+
+## Exemple
+
+```bash
+bin/magento phoenix:createmassorders:generate -c 50 -e client.test@wesco.fr -s SKU-A -s SKU-B -s SKU-C
+```
+
+Génère 50 commandes identiques (mêmes SKU, même client) payées par chèque et
+expédiées via le transporteur Standard.

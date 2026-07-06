@@ -1,0 +1,28 @@
+{
+    "name": "phoenix/module-create-mass-orders",
+    "description": "Commande CLI pour generer des commandes de test en masse sur un environnement de recette Magento.",
+    "type": "magento2-module",
+    "version": "1.0.0",
+    "license": [
+        "proprietary"
+    ],
+    "require": {
+        "php": "~8.1.0||~8.2.0||~8.3.0",
+        "magento/framework": "*",
+        "magento/module-sales": "*",
+        "magento/module-customer": "*",
+        "magento/module-catalog": "*",
+        "magento/module-quote": "*",
+        "magento/module-payment": "*",
+        "magento/module-offline-payments": "*",
+        "magento/module-store": "*"
+    },
+    "autoload": {
+        "files": [
+            "registration.php"
+        ],
+        "psr-4": {
+            "Phoenix\\CreateMassOrders\\": ""
+        }
+    }
+}
