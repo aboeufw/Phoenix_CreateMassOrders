@@ -141,6 +141,16 @@ class OrderGenerator
 
     private function resolveStore(CustomerInterface $customer): \Magento\Store\Api\Data\StoreInterface
     {
+        $storeId = (int) $customer->getStoreId();
+
+        if ($storeId) {
+            try {
+                return $this->storeManager->getStore($storeId);
+            } catch (NoSuchEntityException) {
+                // Store du client invalide/desactive, on se rabat sur le website.
+            }
+        }
+
         $websiteId = (int) $customer->getWebsiteId();
 
         try {
