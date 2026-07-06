@@ -135,13 +135,18 @@ class CreateOrdersCommand extends Command
 
         $created = [];
         $errors = [];
+        $detailedSignatures = [];
 
         for ($i = 1; $i <= $count; $i++) {
             try {
                 $order = $this->orderGenerator->createOrder($customer, $products, $paymentMethod);
                 $created[] = $order->getIncrementId();
             } catch (Throwable $e) {
-                $errors[] = sprintf('Commande #%d : %s', $i, $e->getMessage());
+                $signature = get_class($e) . ':' . $e->getMessage();
+                $detailed = !isset($detailedSignatures[$signature]);
+                $detailedSignatures[$signature] = true;
+                $errors[] = sprintf('Commande #%d : %s', $i, $e->getMessage())
+                    . ($detailed ? "\n" . $this->formatCauseChain($e) : '');
             }
             $progressBar->advance();
         }
@@ -163,5 +168,31 @@ class CreateOrdersCommand extends Command
         }
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Deroule la chaine d'exceptions (previous) pour afficher classe/fichier/ligne
+     * de la cause reelle, masquee par defaut derriere le message de plus haut niveau.
+     */
+    private function formatCauseChain(Throwable $e): string
+    {
+        $lines = [];
+        $current = $e;
+        $depth = 0;
+
+        while ($current !== null) {
+            $lines[] = sprintf(
+                '    %s[%s] %s (%s:%d)',
+                str_repeat('  ', $depth),
+                get_class($current),
+                $current->getMessage(),
+                $current->getFile(),
+                $current->getLine()
+            );
+            $current = $current->getPrevious();
+            $depth++;
+        }
+
+        return implode("\n", $lines);
     }
 }
