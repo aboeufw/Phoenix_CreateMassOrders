@@ -122,12 +122,17 @@ class OrderGenerator
         $shippingAddress->collectShippingRates();
         $shippingAddress->setShippingMethod(self::SHIPPING_METHOD);
 
-        $quote->setPaymentMethod($paymentMethod);
         $quote->setInventoryProcessed(false);
-        $quote->getPayment()->importData(['method' => $paymentMethod]);
-
         $quote->collectTotals();
         $quote->reserveOrderId();
+
+        // Le quote doit deja avoir un ID avant l'import du mode de paiement : certains
+        // observers (ex: Magento_CustomerBalance\Observer\PaymentDataImportObserver)
+        // rechargent le quote via payment->getQuote() et echouent sur un quote non persiste.
+        $this->quoteRepository->save($quote);
+
+        $quote->setPaymentMethod($paymentMethod);
+        $quote->getPayment()->importData(['method' => $paymentMethod]);
         $this->quoteRepository->save($quote);
 
         try {
