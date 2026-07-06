@@ -19,24 +19,25 @@ bin/magento cache:flush
 ```
 bin/magento phoenix:createmassorders:generate \
     --count=10 \
-    --customer-email=client@exemple.com \
+    --customer-erp-id=123456 \
     --sku=SKU-001 --sku=SKU-002 \
     --payment-method=checkmo
 ```
 
 ### Options
 
-| Option              | Raccourci | Obligatoire | Description                                                                 |
-|---------------------|-----------|-------------|-------------------------------------------------------------------------------|
-| `--count`           | `-c`      | Oui         | Nombre de commandes à générer.                                               |
-| `--customer-email`  | `-e`      | Oui         | Email du client Magento (facturation **et** livraison, adresses par défaut). |
-| `--sku`             | `-s`      | Oui         | SKU à inclure dans chaque commande (répéter l'option pour plusieurs SKU, quantité 1 par SKU). |
-| `--payment-method`  | `-p`      | Non         | Code du mode de paiement (défaut : `checkmo`).                              |
+| Option               | Raccourci | Obligatoire | Description                                                                 |
+|----------------------|-----------|-------------|-------------------------------------------------------------------------------|
+| `--count`            | `-c`      | Oui         | Nombre de commandes à générer.                                               |
+| `--customer-erp-id`  | `-e`      | Oui         | Numéro client ERP (attribut client `wesco_customer_erp_id`) pour la facturation **et** la livraison. |
+| `--sku`              | `-s`      | Oui         | SKU à inclure dans chaque commande (répéter l'option pour plusieurs SKU, quantité 1 par SKU). |
+| `--payment-method`   | `-p`      | Non         | Code du mode de paiement (défaut : `checkmo`).                              |
 
 ### Comportement
 
-- Le client est recherché par **email**. Il doit avoir une adresse de facturation
-  et une adresse de livraison par défaut définies dans son carnet d'adresses.
+- Le client est recherché via l'attribut client **`wesco_customer_erp_id`** (numéro
+  client ERP), et non par email. Il doit avoir une adresse de facturation et une
+  adresse de livraison par défaut définies dans son carnet d'adresses.
 - Chaque commande générée contient un exemplaire de chaque SKU passé en paramètre.
 - Le transporteur utilisé est fixé sur **"Standard"** (`transporter_transporter`).
 - Le mode de paiement par défaut est **Paiement par chèque** (`checkmo`), mais un
@@ -56,7 +57,7 @@ bin/magento phoenix:createmassorders:generate \
 ## Exemple
 
 ```bash
-bin/magento phoenix:createmassorders:generate -c 50 -e client.test@wesco.fr -s SKU-A -s SKU-B -s SKU-C
+bin/magento phoenix:createmassorders:generate -c 50 -e 123456 -s SKU-A -s SKU-B -s SKU-C
 ```
 
 Génère 50 commandes identiques (mêmes SKU, même client) payées par chèque et

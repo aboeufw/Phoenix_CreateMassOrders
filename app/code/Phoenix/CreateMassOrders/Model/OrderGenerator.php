@@ -9,6 +9,7 @@ use Magento\Catalog\Api\ProductRepositoryInterface;
 use Magento\Customer\Api\AddressRepositoryInterface;
 use Magento\Customer\Api\CustomerRepositoryInterface;
 use Magento\Customer\Api\Data\CustomerInterface;
+use Magento\Framework\Api\SearchCriteriaBuilder;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Payment\Model\Config as PaymentConfig;
@@ -36,6 +37,11 @@ class OrderGenerator
      */
     private const ESTIMATED_DELIVERY_OFFSET_DAYS = 2;
 
+    /**
+     * Attribut client stockant le numero client ERP.
+     */
+    private const CUSTOMER_ERP_ID_ATTRIBUTE = 'wesco_customer_erp_id';
+
     public function __construct(
         private readonly CustomerRepositoryInterface $customerRepository,
         private readonly AddressRepositoryInterface $addressRepository,
@@ -45,16 +51,38 @@ class OrderGenerator
         private readonly CartManagementInterface $cartManagement,
         private readonly OrderRepositoryInterface $orderRepository,
         private readonly StoreManagerInterface $storeManager,
-        private readonly PaymentConfig $paymentConfig
+        private readonly PaymentConfig $paymentConfig,
+        private readonly SearchCriteriaBuilder $searchCriteriaBuilder
     ) {
     }
 
     /**
-     * @throws NoSuchEntityException
+     * @throws LocalizedException
      */
-    public function getCustomerByEmail(string $email): CustomerInterface
+    public function getCustomerByErpId(string $erpId): CustomerInterface
     {
-        return $this->customerRepository->get($email);
+        $searchCriteria = $this->searchCriteriaBuilder
+            ->addFilter(self::CUSTOMER_ERP_ID_ATTRIBUTE, $erpId)
+            ->create();
+
+        $result = $this->customerRepository->getList($searchCriteria);
+
+        if ($result->getTotalCount() === 0) {
+            throw new NoSuchEntityException(__(
+                'Aucun client trouve avec le numero client ERP "%1" (attribut %2).',
+                $erpId,
+                self::CUSTOMER_ERP_ID_ATTRIBUTE
+            ));
+        }
+
+        if ($result->getTotalCount() > 1) {
+            throw new LocalizedException(__(
+                'Plusieurs clients partagent le numero client ERP "%1", impossible de determiner lequel utiliser.',
+                $erpId
+            ));
+        }
+
+        return current($result->getItems());
     }
 
     /**

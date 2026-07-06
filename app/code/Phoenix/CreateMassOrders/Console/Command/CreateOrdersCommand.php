@@ -18,7 +18,7 @@ use Throwable;
 class CreateOrdersCommand extends Command
 {
     private const OPTION_COUNT = 'count';
-    private const OPTION_CUSTOMER_EMAIL = 'customer-email';
+    private const OPTION_CUSTOMER_ERP_ID = 'customer-erp-id';
     private const OPTION_SKU = 'sku';
     private const OPTION_PAYMENT_METHOD = 'payment-method';
 
@@ -45,10 +45,10 @@ class CreateOrdersCommand extends Command
             'Nombre de commandes a generer'
         );
         $this->addOption(
-            self::OPTION_CUSTOMER_EMAIL,
+            self::OPTION_CUSTOMER_ERP_ID,
             'e',
             InputOption::VALUE_REQUIRED,
-            'Email du client Magento a utiliser pour la facturation et la livraison'
+            'Numero client ERP (attribut client wesco_customer_erp_id) a utiliser pour la facturation et la livraison'
         );
         $this->addOption(
             self::OPTION_SKU,
@@ -76,7 +76,7 @@ class CreateOrdersCommand extends Command
         }
 
         $count = (int) $input->getOption(self::OPTION_COUNT);
-        $email = trim((string) $input->getOption(self::OPTION_CUSTOMER_EMAIL));
+        $erpId = trim((string) $input->getOption(self::OPTION_CUSTOMER_ERP_ID));
         $skus = array_values(array_unique(array_filter(array_map('trim', $input->getOption(self::OPTION_SKU)))));
         $paymentMethod = trim((string) $input->getOption(self::OPTION_PAYMENT_METHOD)) ?: self::DEFAULT_PAYMENT_METHOD;
 
@@ -85,8 +85,8 @@ class CreateOrdersCommand extends Command
             return Command::FAILURE;
         }
 
-        if ($email === '') {
-            $output->writeln('<error>L\'option --customer-email est obligatoire.</error>');
+        if ($erpId === '') {
+            $output->writeln('<error>L\'option --customer-erp-id est obligatoire.</error>');
             return Command::FAILURE;
         }
 
@@ -96,13 +96,9 @@ class CreateOrdersCommand extends Command
         }
 
         try {
-            $customer = $this->orderGenerator->getCustomerByEmail($email);
+            $customer = $this->orderGenerator->getCustomerByErpId($erpId);
         } catch (Throwable $e) {
-            $output->writeln(sprintf(
-                '<error>Client introuvable pour l\'email "%s" : %s</error>',
-                $email,
-                $e->getMessage()
-            ));
+            $output->writeln(sprintf('<error>%s</error>', $e->getMessage()));
             return Command::FAILURE;
         }
 
@@ -123,9 +119,9 @@ class CreateOrdersCommand extends Command
         }
 
         $output->writeln(sprintf(
-            '<info>Generation de %d commande(s) pour "%s" (paiement : %s, transporteur : transporter_transporter, %d SKU par commande)</info>',
+            '<info>Generation de %d commande(s) pour le client ERP "%s" (paiement : %s, transporteur : transporter_transporter, %d SKU par commande)</info>',
             $count,
-            $email,
+            $erpId,
             $paymentMethod,
             count($products)
         ));
