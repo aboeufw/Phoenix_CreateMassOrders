@@ -13,6 +13,7 @@ use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
+use RuntimeException;
 use Throwable;
 
 class CreateOrdersCommand extends Command
@@ -21,8 +22,13 @@ class CreateOrdersCommand extends Command
     private const OPTION_CUSTOMER_ERP_ID = 'customer-erp-id';
     private const OPTION_SKU = 'sku';
     private const OPTION_PAYMENT_METHOD = 'payment-method';
+    private const OPTION_FILE = 'file';
 
     private const DEFAULT_PAYMENT_METHOD = 'checkmo';
+    private const FILE_DELIMITER = ';';
+    private const FILE_COLUMN_CUSTOMER_ERP_ID = 'customer_erp_id';
+    private const FILE_COLUMN_SKUS = 'skus';
+    private const FILE_COLUMN_PAYMENT_METHOD = 'payment_method';
 
     public function __construct(
         private readonly OrderGenerator $orderGenerator,
@@ -60,8 +66,16 @@ class CreateOrdersCommand extends Command
             self::OPTION_PAYMENT_METHOD,
             'p',
             InputOption::VALUE_REQUIRED,
-            'Code du mode de paiement a utiliser',
+            'Code du mode de paiement a utiliser (valeur par defaut utilisee en mode --file si la colonne payment_method est vide)',
             self::DEFAULT_PAYMENT_METHOD
+        );
+        $this->addOption(
+            self::OPTION_FILE,
+            'f',
+            InputOption::VALUE_REQUIRED,
+            'Chemin vers un fichier plat decrivant les commandes a generer (une ligne = une commande). '
+            . 'Colonnes separees par ";" avec en-tete : customer_erp_id;skus;payment_method '
+            . '(skus separes par des virgules, payment_method optionnel). Rend --count, --customer-erp-id et --sku inutilises.'
         );
 
         parent::configure();
@@ -73,6 +87,11 @@ class CreateOrdersCommand extends Command
             $this->appState->setAreaCode(Area::AREA_ADMINHTML);
         } catch (LocalizedException) {
             // Area deja definie par un contexte appelant, on ignore.
+        }
+
+        $filePath = trim((string) $input->getOption(self::OPTION_FILE));
+        if ($filePath !== '') {
+            return $this->executeFromFile($input, $output, $filePath);
         }
 
         $count = (int) $input->getOption(self::OPTION_COUNT);
@@ -164,6 +183,162 @@ class CreateOrdersCommand extends Command
         }
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Genere une commande par ligne d'un fichier plat (customer_erp_id;skus;payment_method).
+     */
+    private function executeFromFile(InputInterface $input, OutputInterface $output, string $filePath): int
+    {
+        $fallbackPaymentMethod = trim((string) $input->getOption(self::OPTION_PAYMENT_METHOD))
+            ?: self::DEFAULT_PAYMENT_METHOD;
+
+        try {
+            $rows = $this->readOrderRows($filePath);
+        } catch (RuntimeException $e) {
+            $output->writeln(sprintf('<error>%s</error>', $e->getMessage()));
+            return Command::FAILURE;
+        }
+
+        if (empty($rows)) {
+            $output->writeln('<error>Aucune ligne de commande exploitable dans le fichier.</error>');
+            return Command::FAILURE;
+        }
+
+        $output->writeln(sprintf(
+            '<info>Generation de %d commande(s) depuis "%s" (1 commande par ligne, transporteur : transporter_transporter)</info>',
+            count($rows),
+            $filePath
+        ));
+
+        $progressBar = new ProgressBar($output, count($rows));
+        $progressBar->start();
+
+        $created = [];
+        $errors = [];
+        $detailedSignatures = [];
+
+        foreach ($rows as $row) {
+            $lineLabel = sprintf('Ligne %d (client ERP %s)', $row['line'], $row['customer_erp_id'] ?: '?');
+
+            try {
+                if ($row['customer_erp_id'] === '') {
+                    throw new LocalizedException(__('Colonne customer_erp_id vide.'));
+                }
+                if (empty($row['skus'])) {
+                    throw new LocalizedException(__('Colonne skus vide.'));
+                }
+
+                $paymentMethod = $row['payment_method'] !== '' ? $row['payment_method'] : $fallbackPaymentMethod;
+
+                $customer = $this->orderGenerator->getCustomerByErpId($row['customer_erp_id']);
+                $this->orderGenerator->assertPaymentMethodIsActive($paymentMethod);
+
+                [$products, $missingSkus] = $this->orderGenerator->loadProductsBySku($row['skus']);
+                if (!empty($missingSkus)) {
+                    throw new LocalizedException(__('SKU introuvable(s) : %1', implode(', ', $missingSkus)));
+                }
+
+                $order = $this->orderGenerator->createOrder($customer, $products, $paymentMethod);
+                $created[] = $order->getIncrementId();
+            } catch (Throwable $e) {
+                $signature = get_class($e) . ':' . $e->getMessage();
+                $detailed = !isset($detailedSignatures[$signature]);
+                $detailedSignatures[$signature] = true;
+                $errors[] = sprintf('%s : %s', $lineLabel, $e->getMessage())
+                    . ($detailed ? "\n" . $this->formatCauseChain($e) : '');
+            }
+
+            $progressBar->advance();
+        }
+
+        $progressBar->finish();
+        $output->writeln('');
+        $output->writeln(sprintf('<info>%d commande(s) creee(s) avec succes.</info>', count($created)));
+
+        if (!empty($created)) {
+            $output->writeln(implode(', ', $created));
+        }
+
+        if (!empty($errors)) {
+            $output->writeln(sprintf('<error>%d erreur(s) rencontree(s) :</error>', count($errors)));
+            foreach ($errors as $error) {
+                $output->writeln(sprintf('<error>- %s</error>', $error));
+            }
+            return Command::FAILURE;
+        }
+
+        return Command::SUCCESS;
+    }
+
+    /**
+     * @return array<int, array{line: int, customer_erp_id: string, skus: string[], payment_method: string}>
+     */
+    private function readOrderRows(string $filePath): array
+    {
+        if (!is_readable($filePath)) {
+            throw new RuntimeException(sprintf('Fichier introuvable ou illisible : %s', $filePath));
+        }
+
+        $handle = fopen($filePath, 'r');
+        if ($handle === false) {
+            throw new RuntimeException(sprintf('Impossible d\'ouvrir le fichier : %s', $filePath));
+        }
+
+        $header = fgetcsv($handle, 0, self::FILE_DELIMITER);
+        if ($header === false) {
+            fclose($handle);
+            throw new RuntimeException('Le fichier est vide.');
+        }
+
+        $header = array_map(static fn (string $column): string => strtolower(trim($column)), $header);
+        $requiredColumns = [self::FILE_COLUMN_CUSTOMER_ERP_ID, self::FILE_COLUMN_SKUS];
+        foreach ($requiredColumns as $requiredColumn) {
+            if (!in_array($requiredColumn, $header, true)) {
+                fclose($handle);
+                throw new RuntimeException(sprintf(
+                    'Colonne obligatoire manquante dans l\'en-tete du fichier : "%s". '
+                    . 'En-tete attendu : customer_erp_id;skus;payment_method',
+                    $requiredColumn
+                ));
+            }
+        }
+
+        $rows = [];
+        $lineNumber = 1;
+
+        while (($data = fgetcsv($handle, 0, self::FILE_DELIMITER)) !== false) {
+            $lineNumber++;
+
+            if ($data === [null]) {
+                continue;
+            }
+
+            $data = array_slice(array_pad($data, count($header), null), 0, count($header));
+            $columns = array_combine($header, $data);
+
+            $customerErpId = trim((string) ($columns[self::FILE_COLUMN_CUSTOMER_ERP_ID] ?? ''));
+            $skus = array_values(array_filter(array_map(
+                'trim',
+                explode(',', (string) ($columns[self::FILE_COLUMN_SKUS] ?? ''))
+            )));
+            $paymentMethod = trim((string) ($columns[self::FILE_COLUMN_PAYMENT_METHOD] ?? ''));
+
+            if ($customerErpId === '' && empty($skus)) {
+                continue;
+            }
+
+            $rows[] = [
+                'line' => $lineNumber,
+                'customer_erp_id' => $customerErpId,
+                'skus' => $skus,
+                'payment_method' => $paymentMethod,
+            ];
+        }
+
+        fclose($handle);
+
+        return $rows;
     }
 
     /**
