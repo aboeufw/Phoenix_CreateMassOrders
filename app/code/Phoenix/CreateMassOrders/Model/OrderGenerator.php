@@ -101,32 +101,34 @@ class OrderGenerator
     }
 
     /**
-     * @param string[] $skus
-     * @return array{0: ProductInterface[], 1: string[]} Liste des produits trouves et des SKU introuvables.
+     * @param array<int, array{sku: string, qty: float}> $skuQuantities
+     * @return array{0: array<int, array{product: ProductInterface, qty: float}>, 1: string[]}
+     *     Lignes produit/quantite trouvees et SKU introuvables.
      */
-    public function loadProductsBySku(array $skus): array
+    public function loadProductsWithQuantities(array $skuQuantities): array
     {
-        $products = [];
+        $items = [];
         $missing = [];
 
-        foreach ($skus as $sku) {
+        foreach ($skuQuantities as $entry) {
             try {
-                $products[] = $this->productRepository->get($sku, false, null, true);
+                $product = $this->productRepository->get($entry['sku'], false, null, true);
+                $items[] = ['product' => $product, 'qty' => $entry['qty']];
             } catch (NoSuchEntityException) {
-                $missing[] = $sku;
+                $missing[] = $entry['sku'];
             }
         }
 
-        return [$products, $missing];
+        return [$items, $missing];
     }
 
     /**
-     * Cree une commande pour le client donne, avec un exemplaire de chaque produit fourni.
+     * Cree une commande pour le client donne, avec la quantite indiquee de chaque produit fourni.
      *
-     * @param ProductInterface[] $products
+     * @param array<int, array{product: ProductInterface, qty: float}> $items
      * @throws LocalizedException
      */
-    public function createOrder(CustomerInterface $customer, array $products, string $paymentMethod): OrderInterface
+    public function createOrder(CustomerInterface $customer, array $items, string $paymentMethod): OrderInterface
     {
         $store = $this->resolveStore($customer);
 
@@ -136,12 +138,13 @@ class OrderGenerator
         $quote->assignCustomer($customer);
         $quote->setCustomerIsGuest(false);
 
-        foreach ($products as $product) {
-            $result = $quote->addProduct($product, 1);
+        foreach ($items as $item) {
+            $result = $quote->addProduct($item['product'], $item['qty']);
             if (is_string($result)) {
                 throw new LocalizedException(__(
-                    'Impossible d\'ajouter le SKU "%1" a la commande : %2',
-                    $product->getSku(),
+                    'Impossible d\'ajouter le SKU "%1" (quantite %2) a la commande : %3',
+                    $item['product']->getSku(),
+                    $item['qty'],
                     $result
                 ));
             }

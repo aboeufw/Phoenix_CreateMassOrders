@@ -79,13 +79,14 @@ Le fichier est au format CSV, colonnes séparées par `;`, avec une ligne d'en-t
 
 ```csv
 customer_erp_id;skus;payment_method
-123456;10020,48816171;banktransfer
-789456;SKU-A,SKU-B;checkmo
-789456;SKU-C;
+123456;{[10020,2],[48816171,1]};banktransfer
+789456;{[SKU-A,1],[SKU-B,5]};checkmo
+789456;{[SKU-C,3]};
 ```
 
 - `customer_erp_id` (obligatoire) : numéro client ERP (attribut `wesco_customer_erp_id`).
-- `skus` (obligatoire) : SKU séparés par des virgules, un exemplaire de chacun par commande.
+- `skus` (obligatoire) : liste de paires SKU/quantité au format `{[SKU,QTE],[SKU,QTE],...}`
+  (les accolades extérieures sont optionnelles, les espaces sont tolérés).
 - `payment_method` (optionnel) : si vide, utilise `--payment-method` (donc `checkmo`
   par défaut).
 

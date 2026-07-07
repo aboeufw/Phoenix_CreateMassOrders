@@ -75,7 +75,8 @@ class CreateOrdersCommand extends Command
             InputOption::VALUE_REQUIRED,
             'Chemin vers un fichier plat decrivant les commandes a generer (une ligne = une commande). '
             . 'Colonnes separees par ";" avec en-tete : customer_erp_id;skus;payment_method '
-            . '(skus separes par des virgules, payment_method optionnel). Rend --count, --customer-erp-id et --sku inutilises.'
+            . '(skus au format {[SKU,QTE],[SKU,QTE],...}, payment_method optionnel). '
+            . 'Rend --count, --customer-erp-id et --sku inutilises.'
         );
 
         parent::configure();
@@ -128,7 +129,8 @@ class CreateOrdersCommand extends Command
             return Command::FAILURE;
         }
 
-        [$products, $missingSkus] = $this->orderGenerator->loadProductsBySku($skus);
+        $skuQuantities = array_map(static fn (string $sku): array => ['sku' => $sku, 'qty' => 1.0], $skus);
+        [$items, $missingSkus] = $this->orderGenerator->loadProductsWithQuantities($skuQuantities);
         if (!empty($missingSkus)) {
             $output->writeln(sprintf(
                 '<error>SKU introuvable(s), aucune commande n\'a ete creee : %s</error>',
@@ -142,7 +144,7 @@ class CreateOrdersCommand extends Command
             $count,
             $erpId,
             $paymentMethod,
-            count($products)
+            count($items)
         ));
 
         $progressBar = new ProgressBar($output, $count);
@@ -154,7 +156,7 @@ class CreateOrdersCommand extends Command
 
         for ($i = 1; $i <= $count; $i++) {
             try {
-                $order = $this->orderGenerator->createOrder($customer, $products, $paymentMethod);
+                $order = $this->orderGenerator->createOrder($customer, $items, $paymentMethod);
                 $created[] = $order->getIncrementId();
             } catch (Throwable $e) {
                 $signature = get_class($e) . ':' . $e->getMessage();
@@ -225,8 +227,10 @@ class CreateOrdersCommand extends Command
                 if ($row['customer_erp_id'] === '') {
                     throw new LocalizedException(__('Colonne customer_erp_id vide.'));
                 }
-                if (empty($row['skus'])) {
-                    throw new LocalizedException(__('Colonne skus vide.'));
+                if (empty($row['sku_quantities'])) {
+                    throw new LocalizedException(__(
+                        'Colonne skus vide ou invalide (format attendu : {[SKU,QTE],[SKU,QTE],...}).'
+                    ));
                 }
 
                 $paymentMethod = $row['payment_method'] !== '' ? $row['payment_method'] : $fallbackPaymentMethod;
@@ -234,12 +238,12 @@ class CreateOrdersCommand extends Command
                 $customer = $this->orderGenerator->getCustomerByErpId($row['customer_erp_id']);
                 $this->orderGenerator->assertPaymentMethodIsActive($paymentMethod);
 
-                [$products, $missingSkus] = $this->orderGenerator->loadProductsBySku($row['skus']);
+                [$items, $missingSkus] = $this->orderGenerator->loadProductsWithQuantities($row['sku_quantities']);
                 if (!empty($missingSkus)) {
                     throw new LocalizedException(__('SKU introuvable(s) : %1', implode(', ', $missingSkus)));
                 }
 
-                $order = $this->orderGenerator->createOrder($customer, $products, $paymentMethod);
+                $order = $this->orderGenerator->createOrder($customer, $items, $paymentMethod);
                 $created[] = $order->getIncrementId();
             } catch (Throwable $e) {
                 $signature = get_class($e) . ':' . $e->getMessage();
@@ -272,7 +276,12 @@ class CreateOrdersCommand extends Command
     }
 
     /**
-     * @return array<int, array{line: int, customer_erp_id: string, skus: string[], payment_method: string}>
+     * @return array<int, array{
+     *     line: int,
+     *     customer_erp_id: string,
+     *     sku_quantities: array<int, array{sku: string, qty: float}>,
+     *     payment_method: string
+     * }>
      */
     private function readOrderRows(string $filePath): array
     {
@@ -318,20 +327,17 @@ class CreateOrdersCommand extends Command
             $columns = array_combine($header, $data);
 
             $customerErpId = trim((string) ($columns[self::FILE_COLUMN_CUSTOMER_ERP_ID] ?? ''));
-            $skus = array_values(array_filter(array_map(
-                'trim',
-                explode(',', (string) ($columns[self::FILE_COLUMN_SKUS] ?? ''))
-            )));
+            $skuQuantities = $this->parseSkuQuantities((string) ($columns[self::FILE_COLUMN_SKUS] ?? ''));
             $paymentMethod = trim((string) ($columns[self::FILE_COLUMN_PAYMENT_METHOD] ?? ''));
 
-            if ($customerErpId === '' && empty($skus)) {
+            if ($customerErpId === '' && empty($skuQuantities)) {
                 continue;
             }
 
             $rows[] = [
                 'line' => $lineNumber,
                 'customer_erp_id' => $customerErpId,
-                'skus' => $skus,
+                'sku_quantities' => $skuQuantities,
                 'payment_method' => $paymentMethod,
             ];
         }
@@ -339,6 +345,34 @@ class CreateOrdersCommand extends Command
         fclose($handle);
 
         return $rows;
+    }
+
+    /**
+     * Extrait les paires SKU/quantite d'une colonne au format {[SKU,QTE],[SKU,QTE],...}
+     * (les accolades exterieures sont optionnelles, les espaces sont tolerees).
+     *
+     * @return array<int, array{sku: string, qty: float}>
+     */
+    private function parseSkuQuantities(string $raw): array
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return [];
+        }
+
+        $pairs = [];
+        preg_match_all('/\[\s*([^,\[\]]+?)\s*,\s*([0-9]+(?:\.[0-9]+)?)\s*\]/', $raw, $matches, PREG_SET_ORDER);
+
+        foreach ($matches as $match) {
+            $sku = trim($match[1]);
+            $qty = (float) $match[2];
+            if ($sku === '' || $qty <= 0) {
+                continue;
+            }
+            $pairs[] = ['sku' => $sku, 'qty' => $qty];
+        }
+
+        return $pairs;
     }
 
     /**
