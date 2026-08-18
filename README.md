@@ -31,8 +31,8 @@ bin/magento phoenix:createmassorders:generate \
 | `--count`            | `-c`      | Oui         | Nombre de commandes à générer.                                               |
 | `--customer-erp-id`  | `-e`      | Oui         | Numéro client ERP (attribut client `wesco_customer_erp_id`) pour la facturation **et** la livraison. |
 | `--sku`              | `-s`      | Oui         | SKU à inclure dans chaque commande (répéter l'option pour plusieurs SKU, quantité 1 par SKU). |
-| `--payment-method`   | `-p`      | Non         | Code du mode de paiement (défaut : `checkmo`). En mode `--file`, valeur de repli si la colonne `payment_method` est vide. |
-| `--file`             | `-f`      | Non         | Chemin vers un fichier plat décrivant plusieurs commandes (voir [Mode fichier](#mode-fichier)). Rend `--count`, `--customer-erp-id` et `--sku` inutilisés. |
+| `--payment-method`   | `-p`      | Non         | Code du mode de paiement (défaut : `checkmo`). En mode `--file`, valeur de repli si aucune ligne de la commande ne renseigne `payment_method`. |
+| `--file`             | `-f`      | Non         | Chemin vers un fichier plat décrivant plusieurs commandes, une ligne par référence produit regroupée par `order` (voir [Mode fichier](#mode-fichier)). Rend `--count`, `--customer-erp-id` et `--sku` inutilisés. |
 
 ### Comportement
 
@@ -66,10 +66,10 @@ expédiées via le transporteur Standard.
 
 ## Mode fichier
 
-Pour générer plusieurs commandes différentes en une seule exécution (un client,
-une liste de SKU et un mode de paiement différents par ligne), utiliser `--file`.
-Chaque ligne du fichier génère exactement **une** commande (le `--count` ne
-s'applique pas).
+Pour générer plusieurs commandes différentes en une seule exécution, utiliser
+`--file`. Le fichier contient **une ligne par référence produit** ; les lignes
+sont regroupées par la colonne `order`, et **une commande est créée par
+identifiant de commande** (le `--count` ne s'applique pas).
 
 ```bash
 bin/magento phoenix:createmassorders:generate --file=/chemin/vers/commandes.csv
@@ -78,18 +78,36 @@ bin/magento phoenix:createmassorders:generate --file=/chemin/vers/commandes.csv
 Le fichier est au format CSV, colonnes séparées par `;`, avec une ligne d'en-tête :
 
 ```csv
-customer_erp_id;skus;payment_method
-123456;{[10020,2],[48816171,1]};banktransfer
-789456;{[SKU-A,1],[SKU-B,5]};checkmo
-789456;{[SKU-C,3]};
+order;customer_erp_id;sku;qty;payment_method
+SJ15121;AA315267;15141115;2;
+SJ15121;AA315267;154515115;1;
+SJ15121;AA315267;1514999;1;
+SJ15122;AA315557;1544449;1;
 ```
 
-- `customer_erp_id` (obligatoire) : numéro client ERP (attribut `wesco_customer_erp_id`).
-- `skus` (obligatoire) : liste de paires SKU/quantité au format `{[SKU,QTE],[SKU,QTE],...}`
-  (les accolades extérieures sont optionnelles, les espaces sont tolérés).
-- `payment_method` (optionnel) : si vide, utilise `--payment-method` (donc `checkmo`
-  par défaut).
+L'exemple ci-dessus génère **2 commandes** : `SJ15121` avec 3 lignes produit et
+`SJ15122` avec 1 ligne produit.
 
-Les lignes vides sont ignorées. Si une ligne échoue (client ou SKU introuvable,
-mode de paiement inactif, etc.), l'erreur est journalisée pour cette ligne et
-les lignes suivantes sont traitées normalement.
+| Colonne            | Obligatoire | Description                                                                                       |
+|--------------------|-------------|---------------------------------------------------------------------------------------------------|
+| `order`            | Oui         | Identifiant de regroupement. Toutes les lignes partageant cette valeur forment une seule commande. |
+| `customer_erp_id`  | Oui         | Numéro client ERP (attribut `wesco_customer_erp_id`). Doit être identique sur toutes les lignes d'une même commande. |
+| `sku`              | Oui         | SKU de la référence produit de la ligne.                                                           |
+| `qty`              | Non         | Quantité commandée pour ce SKU (défaut : `1`). Le séparateur décimal peut être `.` ou `,`.         |
+| `payment_method`   | Non         | Code du mode de paiement. Il suffit de le renseigner sur une seule ligne de la commande ; si aucune ligne ne le renseigne, `--payment-method` est utilisé (donc `checkmo` par défaut). |
+
+Détails de traitement :
+
+- Les lignes d'un même `order` **n'ont pas besoin d'être contiguës** dans le fichier :
+  le regroupement se fait sur la valeur de la colonne, l'ordre des commandes créées
+  suit la première apparition de chaque identifiant.
+- Si un même SKU apparaît plusieurs fois dans une même commande, les quantités sont
+  **cumulées** en une seule ligne de commande.
+- Les colonnes `qty` et `payment_method` peuvent être absentes de l'en-tête.
+- Les lignes vides sont ignorées.
+- Si une commande échoue (client ou SKU introuvable, mode de paiement inactif,
+  numéros client ERP ou modes de paiement divergents au sein d'un même `order`,
+  quantité invalide, etc.), l'erreur est journalisée pour cette commande et les
+  commandes suivantes sont traitées normalement.
+- En fin d'exécution, la correspondance entre l'identifiant du fichier et le numéro
+  de commande Magento généré est affichée (`SJ15121 -> 000000123`).

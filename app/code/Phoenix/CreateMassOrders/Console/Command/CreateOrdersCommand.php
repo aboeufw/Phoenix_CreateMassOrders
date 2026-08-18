@@ -26,9 +26,13 @@ class CreateOrdersCommand extends Command
 
     private const DEFAULT_PAYMENT_METHOD = 'checkmo';
     private const FILE_DELIMITER = ';';
+    private const FILE_COLUMN_ORDER = 'order';
     private const FILE_COLUMN_CUSTOMER_ERP_ID = 'customer_erp_id';
-    private const FILE_COLUMN_SKUS = 'skus';
+    private const FILE_COLUMN_SKU = 'sku';
+    private const FILE_COLUMN_QTY = 'qty';
     private const FILE_COLUMN_PAYMENT_METHOD = 'payment_method';
+
+    private const FILE_HEADER_HINT = 'order;customer_erp_id;sku;qty;payment_method';
 
     public function __construct(
         private readonly OrderGenerator $orderGenerator,
@@ -73,9 +77,10 @@ class CreateOrdersCommand extends Command
             self::OPTION_FILE,
             'f',
             InputOption::VALUE_REQUIRED,
-            'Chemin vers un fichier plat decrivant les commandes a generer (une ligne = une commande). '
-            . 'Colonnes separees par ";" avec en-tete : customer_erp_id;skus;payment_method '
-            . '(skus au format {[SKU,QTE],[SKU,QTE],...}, payment_method optionnel). '
+            'Chemin vers un fichier plat decrivant les commandes a generer (une ligne = un produit, '
+            . 'les lignes sont regroupees par identifiant de commande). '
+            . 'Colonnes separees par ";" avec en-tete : ' . self::FILE_HEADER_HINT . ' '
+            . '(qty optionnel, defaut 1 ; payment_method optionnel). '
             . 'Rend --count, --customer-erp-id et --sku inutilises.'
         );
 
@@ -188,7 +193,10 @@ class CreateOrdersCommand extends Command
     }
 
     /**
-     * Genere une commande par ligne d'un fichier plat (customer_erp_id;skus;payment_method).
+     * Genere une commande par identifiant de commande present dans le fichier plat
+     * (order;customer_erp_id;sku;qty;payment_method) : toutes les lignes partageant
+     * le meme "order" sont regroupees dans une seule commande, a raison d'une ligne
+     * par reference produit.
      */
     private function executeFromFile(InputInterface $input, OutputInterface $output, string $filePath): int
     {
@@ -196,60 +204,60 @@ class CreateOrdersCommand extends Command
             ?: self::DEFAULT_PAYMENT_METHOD;
 
         try {
-            $rows = $this->readOrderRows($filePath);
+            $groups = $this->readOrderGroups($filePath);
         } catch (RuntimeException $e) {
             $output->writeln(sprintf('<error>%s</error>', $e->getMessage()));
             return Command::FAILURE;
         }
 
-        if (empty($rows)) {
+        if (empty($groups)) {
             $output->writeln('<error>Aucune ligne de commande exploitable dans le fichier.</error>');
             return Command::FAILURE;
         }
 
+        $lineCount = array_sum(array_map(static fn (array $group): int => count($group['lines']), $groups));
+
         $output->writeln(sprintf(
-            '<info>Generation de %d commande(s) depuis "%s" (1 commande par ligne, transporteur : transporter_transporter)</info>',
-            count($rows),
-            $filePath
+            '<info>Generation de %d commande(s) depuis "%s" (%d ligne(s) regroupee(s) par identifiant de commande, transporteur : transporter_transporter)</info>',
+            count($groups),
+            $filePath,
+            $lineCount
         ));
 
-        $progressBar = new ProgressBar($output, count($rows));
+        $progressBar = new ProgressBar($output, count($groups));
         $progressBar->start();
 
         $created = [];
         $errors = [];
         $detailedSignatures = [];
 
-        foreach ($rows as $row) {
-            $lineLabel = sprintf('Ligne %d (client ERP %s)', $row['line'], $row['customer_erp_id'] ?: '?');
+        foreach ($groups as $group) {
+            $groupLabel = sprintf(
+                'Commande "%s" (lignes %s)',
+                $group['order'] !== '' ? $group['order'] : '?',
+                $this->formatLineNumbers($group['lines'])
+            );
 
             try {
-                if ($row['customer_erp_id'] === '') {
-                    throw new LocalizedException(__('Colonne customer_erp_id vide.'));
-                }
-                if (empty($row['sku_quantities'])) {
-                    throw new LocalizedException(__(
-                        'Colonne skus vide ou invalide (format attendu : {[SKU,QTE],[SKU,QTE],...}).'
-                    ));
-                }
+                $orderData = $this->buildOrderData($group, $fallbackPaymentMethod);
 
-                $paymentMethod = $row['payment_method'] !== '' ? $row['payment_method'] : $fallbackPaymentMethod;
+                $customer = $this->orderGenerator->getCustomerByErpId($orderData['customer_erp_id']);
+                $this->orderGenerator->assertPaymentMethodIsActive($orderData['payment_method']);
 
-                $customer = $this->orderGenerator->getCustomerByErpId($row['customer_erp_id']);
-                $this->orderGenerator->assertPaymentMethodIsActive($paymentMethod);
-
-                [$items, $missingSkus] = $this->orderGenerator->loadProductsWithQuantities($row['sku_quantities']);
+                [$items, $missingSkus] = $this->orderGenerator->loadProductsWithQuantities(
+                    $orderData['sku_quantities']
+                );
                 if (!empty($missingSkus)) {
                     throw new LocalizedException(__('SKU introuvable(s) : %1', implode(', ', $missingSkus)));
                 }
 
-                $order = $this->orderGenerator->createOrder($customer, $items, $paymentMethod);
-                $created[] = $order->getIncrementId();
+                $order = $this->orderGenerator->createOrder($customer, $items, $orderData['payment_method']);
+                $created[$group['order']] = $order->getIncrementId();
             } catch (Throwable $e) {
                 $signature = get_class($e) . ':' . $e->getMessage();
                 $detailed = !isset($detailedSignatures[$signature]);
                 $detailedSignatures[$signature] = true;
-                $errors[] = sprintf('%s : %s', $lineLabel, $e->getMessage())
+                $errors[] = sprintf('%s : %s', $groupLabel, $e->getMessage())
                     . ($detailed ? "\n" . $this->formatCauseChain($e) : '');
             }
 
@@ -260,8 +268,8 @@ class CreateOrdersCommand extends Command
         $output->writeln('');
         $output->writeln(sprintf('<info>%d commande(s) creee(s) avec succes.</info>', count($created)));
 
-        if (!empty($created)) {
-            $output->writeln(implode(', ', $created));
+        foreach ($created as $sourceOrder => $incrementId) {
+            $output->writeln(sprintf('  %s -> %s', $sourceOrder, $incrementId));
         }
 
         if (!empty($errors)) {
@@ -276,14 +284,140 @@ class CreateOrdersCommand extends Command
     }
 
     /**
-     * @return array<int, array{
+     * Valide un groupe de lignes partageant le meme identifiant de commande et en
+     * deduit les donnees necessaires a la creation de la commande. Les quantites de
+     * lignes portant le meme SKU sont cumulees.
+     *
+     * @param array{order: string, lines: array<int, array{
      *     line: int,
+     *     customer_erp_id: string,
+     *     sku: string,
+     *     qty: string,
+     *     payment_method: string
+     * }>} $group
+     * @return array{
      *     customer_erp_id: string,
      *     sku_quantities: array<int, array{sku: string, qty: float}>,
      *     payment_method: string
-     * }>
+     * }
+     * @throws LocalizedException
      */
-    private function readOrderRows(string $filePath): array
+    private function buildOrderData(array $group, string $fallbackPaymentMethod): array
+    {
+        if ($group['order'] === '') {
+            throw new LocalizedException(__('Colonne %1 vide.', self::FILE_COLUMN_ORDER));
+        }
+
+        $customerErpId = '';
+        $paymentMethod = '';
+        $quantities = [];
+
+        foreach ($group['lines'] as $line) {
+            if ($line['customer_erp_id'] === '') {
+                throw new LocalizedException(__(
+                    'Colonne %1 vide sur la ligne %2.',
+                    self::FILE_COLUMN_CUSTOMER_ERP_ID,
+                    $line['line']
+                ));
+            }
+            if ($customerErpId === '') {
+                $customerErpId = $line['customer_erp_id'];
+            } elseif ($customerErpId !== $line['customer_erp_id']) {
+                throw new LocalizedException(__(
+                    'Numeros client ERP differents pour un meme identifiant de commande : "%1" et "%2" (ligne %3).',
+                    $customerErpId,
+                    $line['customer_erp_id'],
+                    $line['line']
+                ));
+            }
+
+            if ($line['payment_method'] !== '') {
+                if ($paymentMethod === '') {
+                    $paymentMethod = $line['payment_method'];
+                } elseif ($paymentMethod !== $line['payment_method']) {
+                    throw new LocalizedException(__(
+                        'Modes de paiement differents pour un meme identifiant de commande : "%1" et "%2" (ligne %3).',
+                        $paymentMethod,
+                        $line['payment_method'],
+                        $line['line']
+                    ));
+                }
+            }
+
+            if ($line['sku'] === '') {
+                throw new LocalizedException(__(
+                    'Colonne %1 vide sur la ligne %2.',
+                    self::FILE_COLUMN_SKU,
+                    $line['line']
+                ));
+            }
+
+            $qty = $this->parseQty($line['qty'], $line['line']);
+            $quantities[$line['sku']] = ($quantities[$line['sku']] ?? 0.0) + $qty;
+        }
+
+        if (empty($quantities)) {
+            throw new LocalizedException(__('Aucune ligne produit exploitable pour cette commande.'));
+        }
+
+        $skuQuantities = [];
+        foreach ($quantities as $sku => $qty) {
+            $skuQuantities[] = ['sku' => (string) $sku, 'qty' => $qty];
+        }
+
+        return [
+            'customer_erp_id' => $customerErpId,
+            'sku_quantities' => $skuQuantities,
+            'payment_method' => $paymentMethod !== '' ? $paymentMethod : $fallbackPaymentMethod,
+        ];
+    }
+
+    /**
+     * Quantite d'une ligne produit : vide vaut 1.
+     *
+     * @throws LocalizedException
+     */
+    private function parseQty(string $raw, int $lineNumber): float
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return 1.0;
+        }
+
+        $raw = str_replace(',', '.', $raw);
+        if (!is_numeric($raw)) {
+            throw new LocalizedException(__(
+                'Quantite invalide "%1" sur la ligne %2 (nombre attendu).',
+                $raw,
+                $lineNumber
+            ));
+        }
+
+        $qty = (float) $raw;
+        if ($qty <= 0) {
+            throw new LocalizedException(__(
+                'Quantite invalide "%1" sur la ligne %2 (doit etre superieure a 0).',
+                $raw,
+                $lineNumber
+            ));
+        }
+
+        return $qty;
+    }
+
+    /**
+     * Lit le fichier plat et regroupe les lignes par identifiant de commande,
+     * en conservant l'ordre d'apparition dans le fichier.
+     *
+     * @return array<int, array{order: string, lines: array<int, array{
+     *     line: int,
+     *     customer_erp_id: string,
+     *     sku: string,
+     *     qty: string,
+     *     payment_method: string
+     * }>}>
+     */
+    private function readOrderGroups(string $filePath): array
     {
         if (!is_readable($filePath)) {
             throw new RuntimeException(sprintf('Fichier introuvable ou illisible : %s', $filePath));
@@ -300,20 +434,32 @@ class CreateOrdersCommand extends Command
             throw new RuntimeException('Le fichier est vide.');
         }
 
-        $header = array_map(static fn (string $column): string => strtolower(trim($column)), $header);
-        $requiredColumns = [self::FILE_COLUMN_CUSTOMER_ERP_ID, self::FILE_COLUMN_SKUS];
+        $header = array_map(
+            static fn ($column): string => strtolower(trim((string) $column)),
+            $header
+        );
+        // Un BOM UTF-8 en tete de fichier collerait a la premiere colonne.
+        if (isset($header[0])) {
+            $header[0] = ltrim($header[0], "\xEF\xBB\xBF");
+        }
+
+        $requiredColumns = [
+            self::FILE_COLUMN_ORDER,
+            self::FILE_COLUMN_CUSTOMER_ERP_ID,
+            self::FILE_COLUMN_SKU,
+        ];
         foreach ($requiredColumns as $requiredColumn) {
             if (!in_array($requiredColumn, $header, true)) {
                 fclose($handle);
                 throw new RuntimeException(sprintf(
-                    'Colonne obligatoire manquante dans l\'en-tete du fichier : "%s". '
-                    . 'En-tete attendu : customer_erp_id;skus;payment_method',
-                    $requiredColumn
+                    'Colonne obligatoire manquante dans l\'en-tete du fichier : "%s". En-tete attendu : %s',
+                    $requiredColumn,
+                    self::FILE_HEADER_HINT
                 ));
             }
         }
 
-        $rows = [];
+        $groups = [];
         $lineNumber = 1;
 
         while (($data = fgetcsv($handle, 0, self::FILE_DELIMITER)) !== false) {
@@ -326,53 +472,42 @@ class CreateOrdersCommand extends Command
             $data = array_slice(array_pad($data, count($header), null), 0, count($header));
             $columns = array_combine($header, $data);
 
-            $customerErpId = trim((string) ($columns[self::FILE_COLUMN_CUSTOMER_ERP_ID] ?? ''));
-            $skuQuantities = $this->parseSkuQuantities((string) ($columns[self::FILE_COLUMN_SKUS] ?? ''));
-            $paymentMethod = trim((string) ($columns[self::FILE_COLUMN_PAYMENT_METHOD] ?? ''));
+            $line = [
+                'line' => $lineNumber,
+                'customer_erp_id' => trim((string) ($columns[self::FILE_COLUMN_CUSTOMER_ERP_ID] ?? '')),
+                'sku' => trim((string) ($columns[self::FILE_COLUMN_SKU] ?? '')),
+                'qty' => trim((string) ($columns[self::FILE_COLUMN_QTY] ?? '')),
+                'payment_method' => trim((string) ($columns[self::FILE_COLUMN_PAYMENT_METHOD] ?? '')),
+            ];
+            $orderReference = trim((string) ($columns[self::FILE_COLUMN_ORDER] ?? ''));
 
-            if ($customerErpId === '' && empty($skuQuantities)) {
+            if ($orderReference === ''
+                && $line['customer_erp_id'] === ''
+                && $line['sku'] === ''
+                && $line['qty'] === ''
+            ) {
                 continue;
             }
 
-            $rows[] = [
-                'line' => $lineNumber,
-                'customer_erp_id' => $customerErpId,
-                'sku_quantities' => $skuQuantities,
-                'payment_method' => $paymentMethod,
-            ];
+            // Prefixe pour ne pas confondre une reference numerique avec un index de tableau.
+            $key = 'o:' . $orderReference;
+            if (!isset($groups[$key])) {
+                $groups[$key] = ['order' => $orderReference, 'lines' => []];
+            }
+            $groups[$key]['lines'][] = $line;
         }
 
         fclose($handle);
 
-        return $rows;
+        return array_values($groups);
     }
 
     /**
-     * Extrait les paires SKU/quantite d'une colonne au format {[SKU,QTE],[SKU,QTE],...}
-     * (les accolades exterieures sont optionnelles, les espaces sont tolerees).
-     *
-     * @return array<int, array{sku: string, qty: float}>
+     * @param array<int, array{line: int}> $lines
      */
-    private function parseSkuQuantities(string $raw): array
+    private function formatLineNumbers(array $lines): string
     {
-        $raw = trim($raw);
-        if ($raw === '') {
-            return [];
-        }
-
-        $pairs = [];
-        preg_match_all('/\[\s*([^,\[\]]+?)\s*,\s*([0-9]+(?:\.[0-9]+)?)\s*\]/', $raw, $matches, PREG_SET_ORDER);
-
-        foreach ($matches as $match) {
-            $sku = trim($match[1]);
-            $qty = (float) $match[2];
-            if ($sku === '' || $qty <= 0) {
-                continue;
-            }
-            $pairs[] = ['sku' => $sku, 'qty' => $qty];
-        }
-
-        return $pairs;
+        return implode(', ', array_map(static fn (array $line): int => $line['line'], $lines));
     }
 
     /**
